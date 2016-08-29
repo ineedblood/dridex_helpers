@@ -28,8 +28,17 @@ import hashlib
 import re
 from Crypto.PublicKey import RSA
 
-
+# New public key used since around version 3.241 (2016-08-09)
 pubkeystr = (
+    '-----BEGIN PUBLIC KEY-----\n'
+    'MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDC4fmkd7DNltuYEkTYJZOdzubd'
+    'DaN/RZGy6GNiR0IUysd8V2+qE6fk1F9Ao+9k3J9N8CBsROSAQhi3BMSDb//oQFOO'
+    'jVQ2weqjcMWvCruqW0gIxGBuqAzoQcUF/AE2K9FM6xYhhPw9XdLIgF1YA2gF0I5U'
+    'eqxp8wZ4wzzyeB803wIDAQAB'
+    '\n-----END PUBLIC KEY-----'
+)
+
+oldpubkeystr = (
     '-----BEGIN PUBLIC KEY-----\n'
     'MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDQ02MVI4KvJW6jQHWOtyBeaCyT'
     'INAqDvgZFEM8FrSij5/Vs+QobLFR61YcZsMBZ3G2GzeB5n1j1sIOMW0+qTPxlyCO'
@@ -37,8 +46,6 @@ pubkeystr = (
     'LAU/6Ahd2TsrwV5nHQIDAQAB'
     '\n-----END PUBLIC KEY-----'
 )
-
-serverpublickey = RSA.importKey(pubkeystr)
 
 
 hash_oids = {
@@ -244,9 +251,14 @@ class Settings(object):
         res += '>%s</redirect>' % scriptname
         self.redirects.append(res)
 
-    def setRedirectsAttrs(self, switchoff, redir_param_name, delay_param_name):
-        self.redirectsattrs = (' switchoff="%s" redir_param_name="%s" delay_param_name="%s"'
-                               % (switchoff, redir_param_name, delay_param_name))
+    def setRedirectsAttrs(self, switchoff, redir_param_name, delay_param_name, uri=None):
+        if uri:
+            self.dridexurls.append(uri)
+            self.redirectsattrs = (' switchoff="%s" redir_param_name="%s" delay_param_name="%s" uri="%s"'
+                                   % (switchoff, redir_param_name, delay_param_name, uri))
+        else:
+            self.redirectsattrs = (' switchoff="%s" redir_param_name="%s" delay_param_name="%s"'
+                                   % (switchoff, redir_param_name, delay_param_name))
 
     def setSmartCard(self, vnc, socks, interval, uri, ref, pattern):
         self.dridexurls.append(uri)
@@ -328,10 +340,38 @@ def get_tag(xmldata, tag):
     return (tagcontent, tagattrs)
 
 
+def usage_and_exit():
+    print("Usage: %s [--version] <xml settings response file>\n" % sys.argv[0] +
+          "Options:\n"
+          "  --version <vernum>:  Use settings format of given version.\n"
+          "                       (defaults to newest supported)\n"
+          "                       Example: 3.203")
+    sys.exit(1)
+
+
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: %s <xml settings response file>" % sys.argv[0])
-        sys.exit(1)
+    if len(sys.argv) < 2:
+        usage_and_exit()
+
+    binformat = 3246
+
+    if sys.argv[1] == '--version':
+        sys.argv.pop(1)
+        if len(sys.argv) < 3:
+            print("Missing value for --version option")
+            usage_and_exit()
+        versionstr = sys.argv.pop(1)
+        if "." not in versionstr:
+            print("Invalid version number format. Must be a decimal number. Example: 3.203")
+            usage_and_exit()
+        binformat = int(versionstr.replace(".", ""))
+
+    if binformat < 3241:
+        usedpubkeystr = oldpubkeystr
+    else:
+        usedpubkeystr = pubkeystr
+
+    serverpublickey = RSA.importKey(usedpubkeystr)
 
     xmldata = open(sys.argv[1], "rb").read()
 
@@ -427,7 +467,13 @@ def main():
             redir_param_name = memobj.readString()
             delay_param_name = memobj.readString()
 
-            settings.setRedirectsAttrs(switchoff, redir_param_name, delay_param_name)
+            # Additional URI attribute since version 3.203 (2016-04-18)
+            if binformat >= 3203:
+                uri = memobj.readString()
+            else:
+                uri = None
+
+            settings.setRedirectsAttrs(switchoff, redir_param_name, delay_param_name, uri)
 
         # 10: bot_tick_interval
         elif elemtype == 10:
@@ -463,7 +509,7 @@ def main():
             print("Unknown element type 14: %s" % unk)
 
         else:
-            print("Unknown element type %d" % elemtype)
+            print("Unknown element type %d at offset 0x%X (total settings len is 0x%X)" % (elemtype, memobj.offs, len(memobj.data)))
             memobj.readData(elemsize)  # skip unknown element
 
     # Write decrypted serialized settings file
